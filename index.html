@@ -37,6 +37,17 @@
       position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%);
       color: #aaa; background: rgba(0,0,0,0.7); padding: 8px 16px; border-radius: 6px; font-size: 12px;
     }
+
+    #touch-controls {
+      position: absolute; bottom: 58px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; z-index: 10;
+    }
+    #touch-controls button {
+      border: 0; border-radius: 8px; padding: 11px 14px;
+      color: white; background: #1677ff; font: 600 13px system-ui, sans-serif;
+      touch-action: none; user-select: none;
+    }
+    #touch-controls button.active { background: #f08a24; }
   </style>
 
   <script type="importmap">
@@ -51,12 +62,15 @@
 <body>
 
   <div id="status-box" class="warning">⚠️ Poziție incorectă! Potrivește obiectul peste cadru.</div>
-  <div id="info">Trage obiectul cu mouse-ul/degetul pentru a-l suprapune.</div>
+  <div id="touch-controls">
+    <button id="rotate-y" type="button">↔ Rotire</button>
+    <button id="rotate-x" type="button">↕ Rotire</button>
+  </div>
+  <div id="info">Selectează pătratul sau LEGO-ul și trage pentru mutare. Atinge un buton pentru rotație.</div>
 
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { DragControls } from 'three/addons/controls/DragControls.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
     // 1. Scene & Camera Setup
@@ -79,15 +93,37 @@
     const targetGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
     const targetMat = new THREE.MeshStandardMaterial({ color: 0x00aaff, wireframe: true });
     const targetModel = new THREE.Mesh(targetGeo, targetMat);
-    targetModel.position.set(0, 0, 0); // Poziția de referință
+    targetModel.position.set(0, -0.65, 0); // Cadrul stă puțin mai jos
     scene.add(targetModel);
 
     // 3. Obiectul Mobil (Obiectul tău scanat/filmat)
-    const mobileGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
+    const mobileGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
     const mobileMat = new THREE.MeshStandardMaterial({ color: 0xffa500, transparent: true, opacity: 0.85 });
     const mobileObject = new THREE.Mesh(mobileGeo, mobileMat);
-    mobileObject.position.set(-2.5, 0, 0); // Începe dezaxat
+    mobileObject.position.set(-2.5, 0.65, 0); // Obiectul începe puțin mai sus
     scene.add(mobileObject);
+
+    const selectableObjects = [mobileObject];
+    let selectedObject = mobileObject;
+    let legoTarget = null;
+    const loader = new GLTFLoader();
+    loader.load('LEGO_1.glb', (gltf) => {
+      const legoObject = gltf.scene;
+      legoObject.position.set(1.8, 0.9, 0);
+      legoObject.scale.setScalar(8);
+      scene.add(legoObject);
+      selectableObjects.push(legoObject);
+
+      const bounds = new THREE.Box3().setFromObject(legoObject);
+      const size = bounds.getSize(new THREE.Vector3());
+      const frameGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+      const frameMaterial = new THREE.MeshBasicMaterial({ color: 0x00aaff, wireframe: true });
+      legoTarget = new THREE.Mesh(frameGeometry, frameMaterial);
+      legoTarget.position.set(legoObject.position.x + 0.5, -0.5, legoObject.position.z);
+      scene.add(legoTarget);
+    }, undefined, () => {
+      console.warn('LEGO_1.glb nu a fost găsit încă.');
+    });
 
     /* 
     // NOTĂ: După ce descarci fișierul tău model.glb, înlocuiești `mobileObject` de mai sus cu:
@@ -96,45 +132,145 @@
       const myModel = gltf.scene;
       myModel.position.set(-2.5, 0, 0);
       scene.add(myModel);
-      dragControls.getObjects().push(myModel);
+      transformControls.attach(myModel);
     });
     */
 
     // 4. Controale și Calcul Distanță
     const orbitControls = new OrbitControls(camera, renderer.domElement);
-    const dragControls = new DragControls([mobileObject], camera, renderer.domElement);
+    orbitControls.enabled = false;
     const statusBox = document.getElementById('status-box');
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const dragPoint = new THREE.Vector3();
+    const dragOffset = new THREE.Vector3();
+    let dragging = false;
+    let rotationMode = false;
+    let verticalRotationMode = false;
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+    const rotateYButton = document.getElementById('rotate-y');
+    const rotateXButton = document.getElementById('rotate-x');
 
-    const TOLERANTA = 0.4; // Distanța maximă acceptată în unități 3D
+    function getTargetForSelectedObject() {
+      return selectedObject === mobileObject ? targetModel : legoTarget;
+    }
 
-    dragControls.addEventListener('dragstart', () => {
-      orbitControls.enabled = false;
-    });
+    function getToleranceForTarget(target) {
+      const size = new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3());
+      const percentage = target === legoTarget ? 0.12 : 0.05;
+      return Math.max(size.x, size.y, size.z) * percentage;
+    }
 
-    dragControls.addEventListener('drag', () => {
-      // Calculăm distanța 3D directă dintre centrul obiectului și țintă
-      const distanta = mobileObject.position.distanceTo(targetModel.position);
+    function updateAlignment() {
+      const target = getTargetForSelectedObject();
+      if (!target) return;
+      const distanta = selectedObject.position.distanceTo(target.position);
+      const toleranta = getToleranceForTarget(target);
 
-      if (distanta <= TOLERANTA) {
+      if (distanta <= toleranta) {
         statusBox.className = 'success';
-        statusBox.innerHTML = '✅ Poziționare corectă!';
-        mobileObject.material.color.setHex(0x28a745); // Schimbă culoarea în verde
+        statusBox.textContent = '✅ Poziționare corectă!';
+        if (selectedObject.material?.color) selectedObject.material.color.setHex(0x28a745);
       } else {
         statusBox.className = 'warning';
-        statusBox.innerHTML = '⚠️ Poziție incorectă! Ajustează alinierea.';
-        mobileObject.material.color.setHex(0xffa500); // Portocaliu/Avertisment
+        statusBox.textContent = '⚠️ Poziție incorectă! Ajustează alinierea.';
+        if (selectedObject.material?.color) selectedObject.material.color.setHex(0xffa500);
+      }
+    }
+
+    renderer.domElement.addEventListener('pointerdown', (event) => {
+      const bounds = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+      pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const intersections = selectableObjects.flatMap((object) => raycaster.intersectObject(object, true));
+      if (intersections.length > 0) {
+        selectedObject = intersections[0].object;
+        while (selectedObject.parent && !selectableObjects.includes(selectedObject)) {
+          selectedObject = selectedObject.parent;
+        }
+        dragging = true;
+        lastPointerX = event.clientX;
+        lastPointerY = event.clientY;
+        renderer.domElement.setPointerCapture(event.pointerId);
+        if (!rotationMode && raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
+          dragOffset.copy(selectedObject.position).sub(dragPoint);
+        }
       }
     });
 
-    dragControls.addEventListener('dragend', () => {
-      orbitControls.enabled = true;
-      
-      // Auto-snap (lipire automată la centru când ești suficient de aproape)
-      const distanta = mobileObject.position.distanceTo(targetModel.position);
-      if (distanta <= TOLERANTA) {
-        mobileObject.position.copy(targetModel.position);
+    renderer.domElement.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      const bounds = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+      pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const deltaX = event.clientX - lastPointerX;
+      const deltaY = event.clientY - lastPointerY;
+      lastPointerX = event.clientX;
+      lastPointerY = event.clientY;
+
+      if (rotationMode) {
+        selectedObject.rotation.y += deltaX * 0.01;
+      } else if (verticalRotationMode) {
+        selectedObject.rotation.x += deltaY * 0.01;
+      } else if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
+        selectedObject.position.copy(dragPoint).add(dragOffset);
+        updateAlignment();
       }
     });
+
+    renderer.domElement.addEventListener('pointerup', (event) => {
+      if (!dragging) return;
+      dragging = false;
+      renderer.domElement.releasePointerCapture(event.pointerId);
+      const target = getTargetForSelectedObject();
+      const distanta = target ? selectedObject.position.distanceTo(target.position) : Infinity;
+      const toleranta = target ? getToleranceForTarget(target) : 0;
+      if (!rotationMode && target && distanta <= toleranta) {
+        selectedObject.position.copy(target.position);
+        updateAlignment();
+      }
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key.toLowerCase() === 'm' && !event.repeat) {
+        rotationMode = true;
+      }
+      if (event.key.toLowerCase() === 'n' && !event.repeat) {
+        verticalRotationMode = true;
+      }
+    });
+
+    window.addEventListener('keyup', (event) => {
+      if (event.key.toLowerCase() === 'm') {
+        rotationMode = false;
+      }
+      if (event.key.toLowerCase() === 'n') {
+        verticalRotationMode = false;
+      }
+    });
+
+    function setRotationMode(axis, active) {
+      rotationMode = active && axis === 'y';
+      verticalRotationMode = active && axis === 'x';
+      rotateYButton.classList.toggle('active', rotationMode);
+      rotateXButton.classList.toggle('active', verticalRotationMode);
+    }
+
+    for (const [button, axis] of [[rotateYButton, 'y'], [rotateXButton, 'x']]) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        const isActive = axis === 'y' ? rotationMode : verticalRotationMode;
+        setRotationMode(axis, !isActive);
+        if (axis === 'y' && verticalRotationMode) rotateXButton.classList.remove('active');
+        if (axis === 'x' && rotationMode) rotateYButton.classList.remove('active');
+      });
+    }
 
     // Loop de redare
     function animate() {
