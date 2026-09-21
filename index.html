@@ -98,7 +98,7 @@
 
     // 3. Obiectul Mobil
     const mobileObject = new THREE.Group();
-    mobileObject.position.set(-2.5, 0.65, 0); // Obiectul începe puțin mai sus
+    mobileObject.position.set(-2, 0.65, 0); // Casca începe puțin mai la dreapta
     scene.add(mobileObject);
 
     const selectableObjects = [mobileObject];
@@ -110,7 +110,7 @@
       const initialBounds = new THREE.Box3().setFromObject(helmet);
       const initialSize = initialBounds.getSize(new THREE.Vector3());
       const largestDimension = Math.max(initialSize.x, initialSize.y, initialSize.z);
-      helmet.scale.setScalar(1.3 / largestDimension);
+      helmet.scale.setScalar(0.85 / largestDimension);
       const centeredBounds = new THREE.Box3().setFromObject(helmet);
       helmet.position.sub(centeredBounds.getCenter(new THREE.Vector3()));
       mobileObject.add(helmet);
@@ -135,8 +135,8 @@
     });
     loader.load('resources/LEGO_1.glb', (gltf) => {
       const legoObject = gltf.scene;
-      legoObject.position.set(1.8, 0.9, 0);
-      legoObject.scale.setScalar(8);
+      legoObject.position.set(0.3, 0.9, 0);
+      legoObject.scale.setScalar(4);
       scene.add(legoObject);
       selectableObjects.push(legoObject);
 
