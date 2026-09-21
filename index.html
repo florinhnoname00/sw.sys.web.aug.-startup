@@ -90,16 +90,14 @@
     scene.add(dirLight);
 
     // 2. Modelul Țintă (Poziția fixă unde trebuie potrivit obiectul)
-    const targetGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
-    const targetMat = new THREE.MeshStandardMaterial({ color: 0x00aaff, wireframe: true });
-    const targetModel = new THREE.Mesh(targetGeo, targetMat);
-    targetModel.position.set(0, -0.65, 0); // Cadrul stă puțin mai jos
+    const targetMat = new THREE.LineBasicMaterial({ color: 0x00aaff });
+    const targetModel = new THREE.Group();
+    targetModel.userData.frameMaterials = [targetMat];
+    targetModel.position.set(-1.2, -0.65, 0); // Cadrul căștii stă separat, mai la stânga
     scene.add(targetModel);
 
-    // 3. Obiectul Mobil (Obiectul tău scanat/filmat)
-    const mobileGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
-    const mobileMat = new THREE.MeshStandardMaterial({ color: 0xffa500, transparent: true, opacity: 0.85 });
-    const mobileObject = new THREE.Mesh(mobileGeo, mobileMat);
+    // 3. Obiectul Mobil
+    const mobileObject = new THREE.Group();
     mobileObject.position.set(-2.5, 0.65, 0); // Obiectul începe puțin mai sus
     scene.add(mobileObject);
 
@@ -107,18 +105,58 @@
     let selectedObject = mobileObject;
     let legoTarget = null;
     const loader = new GLTFLoader();
-    loader.load('LEGO_1.glb', (gltf) => {
+    loader.load('resources/casca_moto.glb', (gltf) => {
+      const helmet = gltf.scene;
+      const initialBounds = new THREE.Box3().setFromObject(helmet);
+      const initialSize = initialBounds.getSize(new THREE.Vector3());
+      const largestDimension = Math.max(initialSize.x, initialSize.y, initialSize.z);
+      helmet.scale.setScalar(1.3 / largestDimension);
+      const centeredBounds = new THREE.Box3().setFromObject(helmet);
+      helmet.position.sub(centeredBounds.getCenter(new THREE.Vector3()));
+      mobileObject.add(helmet);
+
+      const helmetFrame = helmet.clone(true);
+      const frameMaterials = [];
+      helmetFrame.traverse((node) => {
+        if (!node.isMesh) return;
+        const frameMaterial = new THREE.LineBasicMaterial({ color: 0x00aaff });
+        const outline = new THREE.LineSegments(new THREE.EdgesGeometry(node.geometry, 20), frameMaterial);
+        outline.position.copy(node.position);
+        outline.quaternion.copy(node.quaternion);
+        outline.scale.copy(node.scale);
+        node.visible = false;
+        node.parent.add(outline);
+        frameMaterials.push(frameMaterial);
+      });
+      targetModel.userData.frameMaterials = frameMaterials;
+      targetModel.add(helmetFrame);
+    }, undefined, () => {
+      console.warn('casca_moto.glb nu a fost găsit încă.');
+    });
+    loader.load('resources/LEGO_1.glb', (gltf) => {
       const legoObject = gltf.scene;
       legoObject.position.set(1.8, 0.9, 0);
       legoObject.scale.setScalar(8);
       scene.add(legoObject);
       selectableObjects.push(legoObject);
 
-      const bounds = new THREE.Box3().setFromObject(legoObject);
-      const size = bounds.getSize(new THREE.Vector3());
-      const frameGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
-      const frameMaterial = new THREE.MeshBasicMaterial({ color: 0x00aaff, wireframe: true });
-      legoTarget = new THREE.Mesh(frameGeometry, frameMaterial);
+      const frameModel = legoObject.clone(true);
+      const frameMaterials = [];
+      frameModel.position.set(0, 0, 0);
+      frameModel.traverse((node) => {
+        if (!node.isMesh) return;
+        const frameMaterial = new THREE.LineBasicMaterial({ color: 0x00aaff });
+        const outline = new THREE.LineSegments(new THREE.EdgesGeometry(node.geometry, 20), frameMaterial);
+        outline.position.copy(node.position);
+        outline.quaternion.copy(node.quaternion);
+        outline.scale.copy(node.scale);
+        node.visible = false;
+        node.parent.add(outline);
+        frameMaterials.push(frameMaterial);
+      });
+      legoTarget = new THREE.Group();
+      legoTarget.userData.frameMaterials = frameMaterials;
+      legoTarget.add(frameModel);
       legoTarget.position.set(legoObject.position.x + 0.5, -0.5, legoObject.position.z);
       scene.add(legoTarget);
     }, undefined, () => {
@@ -159,7 +197,7 @@
 
     function getToleranceForTarget(target) {
       const size = new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3());
-      const percentage = target === legoTarget ? 0.12 : 0.05;
+      const percentage = target === targetModel ? 0.10 : 0.12;
       return Math.max(size.x, size.y, size.z) * percentage;
     }
 
@@ -168,14 +206,17 @@
       if (!target) return;
       const distanta = selectedObject.position.distanceTo(target.position);
       const toleranta = getToleranceForTarget(target);
+      const frameMaterials = target.userData.frameMaterials || [targetMat];
 
       if (distanta <= toleranta) {
         statusBox.className = 'success';
         statusBox.textContent = '✅ Poziționare corectă!';
+        frameMaterials.forEach((material) => material.color.setHex(0x28a745));
         if (selectedObject.material?.color) selectedObject.material.color.setHex(0x28a745);
       } else {
         statusBox.className = 'warning';
         statusBox.textContent = '⚠️ Poziție incorectă! Ajustează alinierea.';
+        frameMaterials.forEach((material) => material.color.setHex(0x00aaff));
         if (selectedObject.material?.color) selectedObject.material.color.setHex(0xffa500);
       }
     }
@@ -192,6 +233,7 @@
         while (selectedObject.parent && !selectableObjects.includes(selectedObject)) {
           selectedObject = selectedObject.parent;
         }
+        updateAlignment();
         dragging = true;
         lastPointerX = event.clientX;
         lastPointerY = event.clientY;
